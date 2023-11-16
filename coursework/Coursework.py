@@ -5,16 +5,23 @@ import matplotlib.pyplot as plt
 
 class ModulularNetwork:
     def __init__(self, p, simulation_time, delta_t):
+        # initialise the modular network settings
         self.p = p
         self.delta_t = delta_t
         self.simulation_time = simulation_time
 
-        self.recordings_v = [[] for _ in range(1000)]  # using 1,000 neurones for this
-        self.recordings_u = [[] for _ in range(1000)]
-
-        # DEPRECATED - self.neurones = []
-        # New Neurone Implementation
+        # Constants
+        self._all_neurones = 1000
+        self._excitatory_neurones = 800
+        self._inhibitory_neurones = 200
+        self._num_modules = 8
         self._max_neurone_potential = 30
+
+        # Recording the V and U values for each neurone
+        self.recordings_v = [[] for _ in range(self._all_neurones)]
+        self.recordings_u = [[] for _ in range(self._all_neurones)]
+
+        # New Neurone Implementation - using np vector operations for efficiency
         self.v_now = None
         self.u_now = None
         self.I_now = None
@@ -28,8 +35,7 @@ class ModulularNetwork:
         self.initialise_neurones()
         print("Neurones Initialised!")
 
-        # DEPRECATED - self.synapses = []
-        # New Synapse
+        # New Synapse - again using np arrays wherever possible
         self.synaptic_weights = None
         self.scaling_factors = None
         self.conduction_delays = None
@@ -37,14 +43,19 @@ class ModulularNetwork:
         self.pre_synaptic_neurones = None
         self.post_synaptic_neurones = None
         self.synaptic_efficacy = None
-        self.adjacency_matrix = [[None for _ in range(1000)] for _ in range(1000)]
-        self.decay_factor = 0.01
+        self.adjacency_matrix = [[None for _ in range(self._all_neurones)] for _ in range(self._all_neurones)]
+        self.decay_factor = 0.01  # Represents synaptic decay, after 1 ms we will maintain 1% of the previous current
 
         print("Initialising Synapses")
         self.initialise_synapses()
         print("Synapses Initialised!")
 
     def initialize_neuron_parameters(self, num_excitatory, num_inhibitory):
+        """
+        :param num_excitatory: the total number of excitatory neurones (800)
+        :param num_inhibitory: the total nuber of inhibitory neurones (200)
+        :return: a,b,c,d: returns 4 np arrays of size excitatory_neurones + inhibitory_neurones (1,000)
+        """
         # Vectorized initialization of parameters
         r = np.random.random(num_excitatory + num_inhibitory)
 
@@ -71,34 +82,42 @@ class ModulularNetwork:
         return a, b, c, d
 
     def initialise_neurones(self):
-        num_neurons = 1000
-        num_excitatory = 800
-        num_inhibitory = 200
-
-        # Initialize neuron parameters
-        self.v_now = np.random.uniform(-65, -60, num_neurons)
-        self.u_now = -1 * np.ones(num_neurons)
-        self.I_now = np.zeros(num_neurons)
-        self.firing = np.zeros(num_neurons, dtype=bool)
+        """
+            Initialise 1,000 neurones all together, 800 excitatory neurones, 200 inhibitory neurones.
+            - 8 modules each of 100 excitatory neurones.
+            - 1 inhibitory pool of 200 inhibitory neurones.
+        :return: None
+        """
+        # Initialize neuron parameters - using vectors
+        self.v_now = np.random.uniform(-65, -60, self._all_neurones)
+        self.u_now = -1 * np.ones(self._all_neurones)
+        self.I_now = np.zeros(self._all_neurones)
+        self.firing = np.zeros(self._all_neurones, dtype=bool)
 
         # Neuron type specific parameters
-        a, b, c, d = self.initialize_neuron_parameters(num_excitatory, num_inhibitory)
+        a, b, c, d = self.initialize_neuron_parameters(self._excitatory_neurones, self._inhibitory_neurones)
         self.a = a
         self.b = b
         self.c = c
         self.d = d
         return None
 
-    def update_neurons(self, external_currents, delta_t=0.01):
+    def update_neurons(self, external_currents):
+        """
+            Updates all of the neurones within the network, uses the euler method to update for each self.delta_t time
+            step, updates for 1 ms within that time frame.
+            :param external_currents: an np array of the external currents applied to each neurone <- [0,15]
+            :return: v_now, u_now, firing array.
+        """
         # Number of updates within 1ms
-        num_updates = int(1.0 / delta_t)
+        num_updates = int(1.0 / self.delta_t)
 
         # Update currents
         self.I_now += external_currents
         recordings_v = []
         recordings_u = []
 
-        self.firing = np.array([False for _ in range(1000)])
+        self.firing = np.array([False for _ in range(self._all_neurones)])
 
         # Perform updates for each small timestep within 1ms
         for time_step in range(num_updates):
@@ -108,8 +127,8 @@ class ModulularNetwork:
                     self.I_now[not_fired]
             du_dt = self.a[not_fired] * (self.b[not_fired] * self.v_now[not_fired] - self.u_now[not_fired])
 
-            self.v_now[not_fired] += delta_t * dv_dt
-            self.u_now[not_fired] += delta_t * du_dt
+            self.v_now[not_fired] += self.delta_t * dv_dt
+            self.u_now[not_fired] += self.delta_t * du_dt
 
             # Check for firing neurons
             firing_neurons = self.v_now >= self._max_neurone_potential
@@ -125,14 +144,26 @@ class ModulularNetwork:
         self.I_now = np.zeros_like(self.I_now)
 
         # Extend the historical recordings with new data
-        for neuron_id in range(1000):
+        for neuron_id in range(self._all_neurones):
             self.recordings_v[neuron_id].extend([v[neuron_id] for v in recordings_v])
             self.recordings_u[neuron_id].extend([u[neuron_id] for u in recordings_u])
 
         return self.v_now, self.u_now, self.firing
 
     def initialise_synapse_params(self, synapes):
+        """
+            Initialises the parameters of all the synapses, tries to apply the np arrays to each parameter i.e.
+            - weight, scaling, delay, conduction queue
+            :param synapes: tuple (pre_synaptic_id, post_synaptic_id)
+            :return: None
+        """
         def get_synapse_params(pre_neurone_type, post_neurone_type):
+            """
+                Given a type of INHIBITORY / EXCITATORY we return a weight, scaling and a conduction delay
+            :param pre_neurone_type: INHIBITORY / EXCITATORY
+            :param post_neurone_type: INHIBITORY / EXCITATORY
+            :return: Weight, Scaling, and Conduction Delay
+            """
             if pre_neurone_type == "EXCITATORY":
                 if post_neurone_type == "INHIBITORY":
                     return random.random(), 50, 1
@@ -164,10 +195,16 @@ class ModulularNetwork:
         self.conduction_queue = conduction_queue
 
     def initialise_synapses(self):
-        # To make this more efficient, let's define the connections first in terms of index -> index
+        """
+            Creating the synapses in the recommended method by the spec:
+            - 8 modules of 100 excitatory neurones each have 1,000 inter community synapses.
+                - with probability p, for each connection rewire to intra-community synapse
+            - 200 inhibitory neurone pool,
+        :return: None
+        """
         synapses = []
 
-        for module_number in range(8):
+        for module_number in range(self._num_modules):
             pre_synpatic_neurones = np.random.randint(0, 99, 1000) + (module_number * 100)
             for i in pre_synpatic_neurones:
                 post_synaptic_neurone = random.randint(0, 99) + (module_number * 100)
@@ -175,7 +212,7 @@ class ModulularNetwork:
                     post_synaptic_neurone = random.randint(0, 99) + (module_number * 100)
                 synapses.append((i, post_synaptic_neurone))
 
-        all_modules = set(range(0, 8))
+        all_modules = set(range(0, self._num_modules))
 
         # Rewire these neurone connections
         for index, synapse in enumerate(synapses):
@@ -187,7 +224,7 @@ class ModulularNetwork:
                 synapses[index] = (pre_neurone_id, new_post_neurone)
 
         for i in range(800, 1000):
-            for j in range(1000):
+            for j in range(self._all_neurones):
                 if i == j:
                     continue
                 synapses.append((i, j))
@@ -203,6 +240,16 @@ class ModulularNetwork:
         self.initialise_synapse_params(synapses)
 
     def update_synapse(self):
+        """
+            Goes through each of the synapses and looks at the first element in the conduction queue
+            if there is an element in the first index of the queue it will add it to the post_synaptic_neurone
+            otherwise, it'll carry one.
+
+            if the pre_synaptic_neurone is firing it'll add a 1 to the back of the queue (length of conduction delay)
+            otherwise it'll add a 0 to the back
+
+            :return: None
+        """
         # Apply decay to all synaptic efficacies
         self.synaptic_efficacy *= self.decay_factor
 
@@ -225,10 +272,16 @@ class ModulularNetwork:
             # Note: This will require accumulating the input from all synapses for each neuron
             self.I_now[post_neurone_id] += self.synaptic_efficacy[i] * self.scaling_factors[i]
 
+
     def run_simulation(self):
+        """
+            This goes through simultation time in ms, handles the external current using poisson distribution.
+            it also handles the update of the neurones and the synapses.
+            :return:
+        """
         for sim_time in range(self.simulation_time):
             # Update background current for neurons as a NumPy array
-            external_currents = np.array([15 if np.random.poisson(0.01) > 0 else 0 for _ in range(1000)])
+            external_currents = np.array([15 if np.random.poisson(0.01) > 0 else 0 for _ in range(self._all_neurones)])
             # Update neurons and synapses
             self.update_neurons(external_currents)
             self.update_synapse()
@@ -236,6 +289,11 @@ class ModulularNetwork:
             print(f'\rSimulation progress: {progress:.2%}', end='')
 
     def plot_adjacency_matrix(self, filename):
+        """
+            Handles plotting of the adjacency matrix.
+            :param filename: Will plot an adjacency matrix and save the fig in the filename location
+            :return: None
+        """
         plot_matrix = np.array([[0 if value is None else 1 for value in row] for row in self.adjacency_matrix])
         plt.figure(figsize=(10, 10))
         plt.imshow(plot_matrix, cmap='Greys', interpolation='none')
@@ -251,7 +309,12 @@ class ModulularNetwork:
         plt.savefig(filename)
         plt.show()
 
-    def plot_rassta_plots(self, filename):
+    def plot_raster_plots(self, filename):
+        """
+            Handles plotting of the raster plots - will plot a raster
+            :param filename: string location where plot will be saved
+            :return: None
+        """
         # Assuming 'data' is a 2D NumPy array where rows correspond to neurons and columns correspond to time points
         # Convert your recordings to a NumPy array if it isn't already
         data = np.array(self.recordings_v[:800])
@@ -287,7 +350,21 @@ class ModulularNetwork:
         plt.show()
 
     def plot_mean_firing_rate(self, filename):
+        """
+            Handles plotting of the mean firing rate in the graph.
+            :param filename: string location where plot will be saved
+            :return: None
+        """
         def _calculate_mean_firing_rate(module_data, window_size_ms=50, shift_ms=20, total_time=1000):
+            """
+                This handles the plot for a given module_data, subset of the total recordings. handles the window size
+                and the shifting characteristics given by spec.
+                :param module_data: for a given module v_recordings set (subset of all data)
+                :param window_size_ms: this is the size in ms of the windows we're looking at.
+                :param shift_ms: how much were sliding the window across our total time.
+                :param total_time: the total time in ms we're running the simulation for.
+                :return: None
+            """
             steps_per_ms = int(1 / self.delta_t)
             window_size = int(window_size_ms / self.delta_t)
             shift = int(shift_ms / self.delta_t)
@@ -311,12 +388,12 @@ class ModulularNetwork:
             return mean_firing_rates
 
         all_mean_firing_rates = []
-        for i in range(8):
+        for i in range(self._num_modules):
             module_data = np.array(self.recordings_v[i * 100: (i + 1) * 100])
             mean_firing_rates = _calculate_mean_firing_rate(module_data)
             all_mean_firing_rates.append(mean_firing_rates)
 
-        x_values = np.arange(0, 1000, 20)[:len(all_mean_firing_rates[0])]
+        x_values = np.arange(0, self._all_neurones, 20)[:len(all_mean_firing_rates[0])]
 
         plt.figure(figsize=(10, 6))
         for i, rates in enumerate(all_mean_firing_rates):
@@ -337,5 +414,5 @@ if __name__=="__main__":
         module = ModulularNetwork(rewiring_p, 1000, 0.01)
         module.run_simulation()
         module.plot_adjacency_matrix(f"{index}-Adjacency-Matrix.png")
-        module.plot_rassta_plots(f"{index}-Rassta-Plot.png")
+        module.plot_raster_plots(f"{index}-Raster-Plot.png")
         module.plot_mean_firing_rate(f"{index}-Mean-Firing-Rate.png")
